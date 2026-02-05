@@ -44,10 +44,10 @@ class LLMAaveYieldAgent:
     Uses OpenAI GPT-4 to analyze market data and make recommendations.
     """
     
-    # Aave V3 Base Sepolia addresses
-    AAVE_V3_POOL = "0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27"
-    USDC_ADDRESS = "0xba50cd2a20f6da35d788639e581bca8d0b5d4d5f"
-    AUSDC_ADDRESS = "0x10F1A9D11CDf50041f3f8cB7191CBE2f31750ACC"
+    # Aave V3 Base mainnet addresses
+    AAVE_V3_POOL = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
+    USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    AUSDC_ADDRESS = "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB"
 
     # YieldVault ABI (view + supplyToAave for pushing idle to Aave)
     VAULT_ABI = [
@@ -116,7 +116,7 @@ class LLMAaveYieldAgent:
         Initialize the LLM-powered Aave yield agent.
 
         Args:
-            rpc_url: Base Sepolia RPC endpoint
+            rpc_url: Base Mainnet RPC endpoint
             treasury_address: Treasury wallet address to monitor
             openai_api_key: OpenAI API key
             model: OpenAI model to use (gpt-4o, gpt-4-turbo, etc.)
@@ -482,7 +482,7 @@ class LLMAaveYieldAgent:
             'treasury_balance': self.get_treasury_balance(),
             'alternative_yields': self.get_alternative_yields(),
             'gas_cost_usd': self.estimate_gas_cost(),
-            'network': 'Base Sepolia',
+            'network': 'Base Mainnet',
             'asset': 'USDC',
         }
         vault_balances = self.get_vault_balances()
@@ -497,7 +497,7 @@ class LLMAaveYieldAgent:
         """Create the system prompt for the LLM agent."""
         return f"""You are an expert DeFi yield strategist and financial advisor specializing in Aave protocol.
 
-Your role is to analyze market data and make intelligent decisions about whether to deposit USDC into Aave v3 on Base Sepolia.
+Your role is to analyze market data and make intelligent decisions about whether to deposit USDC into Aave v3 on Base Mainnet.
 
 RISK TOLERANCE: {self.risk_tolerance.upper()}
 
@@ -532,7 +532,7 @@ IMPORTANT GUIDELINES:
 - Be honest about uncertainties and risks
 - Provide actionable insights, not just data regurgitation
 
-Remember: You're managing real treasury funds (testnet for now, but treat it as real). Your recommendations should be professional, well-reasoned, and defensible."""
+Remember: You're managing real treasury funds on Base Mainnet. Your recommendations should be professional, well-reasoned, and defensible."""
 
     def ask_llm_for_decision(self, market_data: Dict) -> Dict:
         """Use GPT-4 to analyze market data and make a decision."""
@@ -551,7 +551,7 @@ VAULT BALANCES (application holdings, same as read_vault_balance.py):
 
         # Prepare the market data summary
         market_summary = f"""
-CURRENT MARKET DATA (Base Sepolia - Testnet):
+CURRENT MARKET DATA (Base Mainnet):
 
 AAVE USDC POSITION:
 - Current APY: {market_data['aave_apy']:.4f}%
@@ -836,7 +836,7 @@ def get_agent() -> LLMAaveYieldAgent:
     global _agent_instance
     if _agent_instance is None:
         # Load configuration from .env
-        RPC_URL = os.getenv('BASE_SEPOLIA_RPC_URL', 'https://sepolia.base.org')
+        RPC_URL = os.getenv('BASE_SEPOLIA_RPC_URL', 'https://mainnet.base.org')
         TREASURY_ADDRESS = os.getenv('TREASURY_ADDRESS')
         OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
         OPERATOR_PRIVATE_KEY = os.getenv('OPERATOR_PRIVATE_KEY', '').strip()
@@ -951,4 +951,4 @@ if __name__ == "__main__":
     import uvicorn
     
     # Run the FastAPI server
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
