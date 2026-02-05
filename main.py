@@ -185,7 +185,16 @@ class LLMAaveYieldAgent:
         self._save_apy_history()
 
     def get_current_apy(self) -> float:
-        """Get current USDC supply APY from Aave."""
+        """
+        Get current USDC supply APY from Aave.
+        
+        Aave's currentLiquidityRate is stored in RAY format (27 decimals).
+        This matches the TypeScript implementation in aave-markets.ts which does:
+        (ray * 100) / RAY to get the percentage directly.
+        
+        Note: While Aave docs mention compounding, the rate returned appears to be
+        already normalized for direct percentage conversion in practice.
+        """
         try:
             usdc_checksum = Web3.to_checksum_address(self.USDC_ADDRESS)
             reserve_data = self.pool_contract.functions.getReserveData(
@@ -194,15 +203,47 @@ class LLMAaveYieldAgent:
             
             liquidity_rate = reserve_data[2]
             RAY = 10 ** 27
-            rate_per_second = liquidity_rate / RAY
-            apy = (rate_per_second * 365 * 24 * 60 * 60) * 100
+            
+            # Log raw value for debugging
+            logger.info(f"Aave liquidity_rate (raw): {liquidity_rate} (type: {type(liquidity_rate)})")
+            
+            # Ensure liquidity_rate is a number
+            if isinstance(liquidity_rate, (list, tuple)):
+                logger.warning(f"liquidity_rate is a {type(liquidity_rate)}, taking first element")
+                liquidity_rate = liquidity_rate[0] if liquidity_rate else 0
+            
+            # Convert to int if it's a string or other type
+            try:
+                liquidity_rate = int(liquidity_rate)
+            except (ValueError, TypeError) as e:
+                logger.error(f"Could not convert liquidity_rate to int: {e}")
+                return 0.0
+            
+            # Direct conversion matching TypeScript implementation
+            # This is: (liquidity_rate * 100) / RAY
+            # Equivalent to: (liquidity_rate / RAY) * 100
+            apy = (liquidity_rate * 100) / RAY
+            
+            # Sanity check: if APY is unreasonably high (>1000%), something is wrong
+            if apy > 1000:
+                logger.warning(f"Unusually high APY calculated: {apy:.4f}%. Raw liquidity_rate: {liquidity_rate}")
+                # Try alternative calculation if direct conversion seems wrong
+                # Maybe the rate needs to be interpreted differently
+                rate_decimal = liquidity_rate / RAY
+                logger.warning(f"Rate as decimal: {rate_decimal:.15f}")
+                
+                # If rate_decimal is very large (>1), it might be a different format
+                # For now, cap at reasonable maximum and log warning
+                if apy > 10000:
+                    logger.error(f"APY calculation seems incorrect. Capping at 1000% for safety.")
+                    apy = 1000.0
             
             logger.info(f"Current Aave USDC APY: {apy:.4f}%")
             # Record APY for historical tracking
             self._record_apy(apy)
             return apy
         except Exception as e:
-            logger.error(f"Error fetching Aave APY: {e}")
+            logger.error(f"Error fetching Aave APY: {e}", exc_info=True)
             return 0.0
 
     def get_historical_yield_metrics(self) -> Dict:
@@ -516,12 +557,22 @@ You must respond with a JSON object containing:
     "confidence": 0-100 (percentage),
     "reasoning": "detailed explanation of your decision",
     "key_factors": ["list", "of", "key", "factors"],
-    "projected_30day_return": estimated return in USD,
-    "projected_90day_return": estimated return in USD,
+    "projected_30day_return": estimated return in USD (calculate as: balance * APY% / 100 * 30/365, minus gas costs if applicable),
+    "projected_90day_return": estimated return in USD (calculate as: balance * APY% / 100 * 90/365, minus gas costs if applicable),
     "risks": ["list", "of", "risks"],
     "opportunities": ["list", "of", "opportunities"],
     "alternative_recommendation": "if not depositing, what should be done instead"
 }}
+
+CALCULATION INSTRUCTIONS FOR PROJECTED RETURNS:
+- Use the "Balance for yield calc" value from the market data
+- Use the current Aave APY percentage
+- Formula: balance * (APY / 100) * (days / 365)
+- For 30 days: balance * (APY / 100) * (30 / 365)
+- For 90 days: balance * (APY / 100) * (90 / 365)
+- If decision is HOLD, projected returns should be 0 or minimal
+- If decision is DEPOSIT, subtract one-time gas cost from the projected returns
+- Always provide actual calculated values, not 0 unless truly no return is expected
 
 IMPORTANT GUIDELINES:
 - For CONSERVATIVE risk tolerance: Only recommend DEPOSIT if clearly profitable with minimal risk
@@ -618,6 +669,30 @@ Analyze thoroughly and provide your recommendation in the required JSON format.
             # Parse the LLM response
             llm_response = response.choices[0].message.content
             decision_data = json.loads(llm_response)
+            
+            # Calculate projected returns if LLM didn't provide them or returned 0
+            vb = market_data.get('vault_balances')
+            balance_for_calc = vb['total_usdc'] if vb and vb.get('total_usdc', 0) > 0 else market_data.get('treasury_balance', 0)
+            aave_apy = market_data.get('aave_apy', 0)
+            gas_cost = market_data.get('gas_cost_usd', 0)
+            
+            # Only calculate if decision is DEPOSIT and we have valid data
+            if decision_data.get('decision') == 'DEPOSIT' and balance_for_calc > 0 and aave_apy > 0:
+                if not decision_data.get('projected_30day_return') or decision_data.get('projected_30day_return', 0) == 0:
+                    # Calculate: balance * (APY / 100) * (30 / 365) - gas_cost (one-time)
+                    projected_30d = (balance_for_calc * aave_apy / 100 * 30 / 365) - gas_cost
+                    decision_data['projected_30day_return'] = max(0, projected_30d)  # Don't go negative
+                    logger.info(f"Calculated projected_30day_return: ${projected_30d:.2f}")
+                
+                if not decision_data.get('projected_90day_return') or decision_data.get('projected_90day_return', 0) == 0:
+                    # Calculate: balance * (APY / 100) * (90 / 365) - gas_cost (one-time)
+                    projected_90d = (balance_for_calc * aave_apy / 100 * 90 / 365) - gas_cost
+                    decision_data['projected_90day_return'] = max(0, projected_90d)  # Don't go negative
+                    logger.info(f"Calculated projected_90day_return: ${projected_90d:.2f}")
+            elif decision_data.get('decision') == 'HOLD':
+                # For HOLD decisions, ensure returns are 0
+                decision_data['projected_30day_return'] = 0
+                decision_data['projected_90day_return'] = 0
             
             # Log token usage
             logger.info(f"Tokens used - Prompt: {response.usage.prompt_tokens}, "
